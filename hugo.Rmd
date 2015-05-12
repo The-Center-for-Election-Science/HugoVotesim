@@ -1,0 +1,186 @@
+---
+title: "hugo"
+author: "Jameson Quinn"
+date: "May 5, 2015"
+output: ioslides_presentation
+---
+
+## R Markdown
+
+This is an R Markdown presentation. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document.
+
+## Slide with Bullets
+
+- Bullet 1
+- Bullet 2
+- Bullet 3
+
+## Slide with R Code and Output
+
+```{r}
+
+library(data.table)
+library(ggplot2)
+library(boot)
+library(elasticnet)
+library(plyr)
+library(stringdist)
+
+cats = c("1 - novel", "2 - novella", "3 - novelette", "4 - short story", 
+"5 - non-fiction book", "6 - dramatic presentation", "7 - pro editor", 
+"8 - pro artist", "9 - semiprozine", "10 - fanzine", "11 - fan writer", 
+"12 - fan artist", "13 -  Campbell Award (not a Hugo)")
+hugos = data.table(read.fwf("catsort.txt",widths = c(5,3,9,9,76-27,2,113-78,99),comment.char="", strip.white=T))
+setnames(hugos,c("voter","cat","postdate","gotdate","title","numvotes","author","publisher"))
+hugos[,title:=as.character(title)]
+titles = c()
+for (i in 1:dim(hugos)[1]) {
+  title = hugos[i,title]
+  titdist = stringdist(titles, title, method="jw")
+  if (all(!is.finite(titdist))) {
+    titdist = rep(1,length(titdist))
+  }
+  if (hugos[i,cat] < 7) {
+    cutoff = 0.13
+  } else {
+    cutoff = 0.09
+  }
+  if (min(titdist) > cutoff) {
+    titles = c(titles,title)
+    titdist = c(titdist,0)
+  } else if (min(titdist) > (cutoff / 2)) {
+    cat(hugos[i,cat],min(titdist),title,titles[which(titdist == min(titdist))[1]],"\n")
+  }
+  
+  hugos[i,titindex:=  which(titdist == min(titdist))[1]]
+  if (i %% 1000 == 0) {
+    print(i)
+    print("....")
+    }
+}
+
+novels = hugos[cat==1]
+titles[novels[,.N,by=titindex][order(-N)][1:5,titindex]]
+for (i in 1:13) {cat("Category",cats[i],"- had",sum(count(hugos[cat==i,][,.N,by=titindex][,N])[-1:-3,2]),"works with 3 or more votes.\n")}
+sdvlpe = function(ballots, allValid = T) {
+  #count raw votes
+  if (!("rawvotes" %in% names(ballots))) {
+    ballots[,rawvotes:=.N,by=titindex]
+  }
+  
+  #find plurality winners
+  rawOrder = ballots[,.N,by=titindex][order(-N)]
+  nwin = 5
+  while (rawOrder[nwin,N] == rawOrder[nwin+1,N]) {
+    nwin = nwin + 1
+  }
+  rawWinners = sort(rawOrder[1:nwin,titindex])
+  
+  #find SDVLPE winners
+  if (allValid) {
+    ballots[,valid:=T]
+  }
+  done=F
+  #Mass elimination
+  ballots[valid==T,fvotes:=1/.N,by=voter]
+  fvotes = ballots[,list(f=sum(fvotes),raw=rawvotes[1]),by=titindex][order(-f)]
+  cutoff = fvotes[5,f]
+  ballots[rawvotes < cutoff, valid:=F]
+  
+  ties = c()
+  allFs = data.table()
+  strange = F
+  round = 0
+  while (!done) {
+    round = round + 1
+    ballots[valid==T,fvotes:=1/.N,by=voter]
+    fvotes = ballots[valid==T,list(f=sum(fvotes),raw=rawvotes[1],r =round),by=titindex][order(f)]
+    allFs = rbind(allFs,fvotes)
+    njoust = 2
+    numcand = dim(fvotes)[1]
+    while ((njoust < numcand) & (fvotes[njoust,f] == fvotes[njoust+1,f])) {
+      njoust = njoust + 1
+    }
+    #print(fvotes)
+    losers = fvotes[1:njoust]
+    losers = losers[raw == min(losers[,raw]), titindex]
+    #print(losers)
+    if (length(losers) > 1) {
+      losers = allFs[titindex %in% losers,sum(f * (2 ^ r)),by=titindex]
+      losers = losers[V1 == min(losers[,V1]), titindex]
+      if (length(losers) > 1) {
+        ties = c(dim(fvotes)[1], ties)
+      }
+    }
+    if ((dim(fvotes)[1] - length(losers)) < 5) {
+      done = T
+    } else {
+      ballots[titindex %in% losers, valid:=F]
+    }
+  }
+  
+  winners = sort(fvotes[,titindex])
+  return(list(rawtie=(nwin > 5),
+              ties = ties,
+              same = length(intersect(winners, rawWinners)),
+              winners = winners,
+              rawWinners = rawWinners
+              ))
+}
+
+stat = function(ballots,orig) {
+  sdv = sdvlpe(ballots)
+  #if (length(sdv$rawWinners) > 5) {print(sdv$ties)}
+  c(sdv$same,length(sdv$winners),length(sdv$rawWinners),sum(sdv$ties < 10))
+}
+
+stableStat = function(ballots,orig) {
+  sdv = sdvlpe(ballots)
+  declined = sample(sdv$winners,1)
+  sdv2 = sdvlpe(ballots[,valid:=(titindex != declined)],allValid=F)
+  
+  #if (length(sdv$rawWinners) > 5) {print(sdv$ties)}
+  c(0,length(intersect(sdv$winners,sdv2$winners)))
+}
+
+
+
+for (i in 1:13) {
+  onecat = hugos[cat == i]
+  print(sdvlpe(onecat)$ties)
+}
+
+n = 600
+for (i in 1:13) {
+  onecat = hugos[cat == i]
+  smaller = hugos[sample(1:dim(hugos)[1],n)]
+  boots = boot(onecat,stat, R=100, 
+               sim="parametric",
+               mle = n
+               ,ran.gen=function(d,n){d[sample(1:dim(d)[1],n   ,replace=T)]}#   )]}#,replace=T)]}#
+               )
+  print(colMeans(boots$t))
+}
+for (i in 1:13) {
+  onecat = hugos[cat == i]
+  smaller = hugos[sample(1:dim(hugos)[1],n)]
+  boots = boot(onecat,stableStat, R=25, 
+               sim="parametric",
+               mle = n
+               ,ran.gen=function(d,n){d[sample(1:dim(d)[1],n   ,replace=T)]}#   )]}#,replace=T)]}#
+               )
+  print(colMeans(boots$t))
+}
+
+
+```
+
+## Slide with Plot
+
+```{r, echo=FALSE}
+plot(cars)
+
+```
+
